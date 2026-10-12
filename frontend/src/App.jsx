@@ -9,7 +9,7 @@ import {
 import {
   Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
-import { request } from "./api.js";
+import { ApiError, request } from "./api.js";
 
 const CATEGORIES = ["Food", "Transport", "Education", "Shopping", "Bills", "Entertainment", "Healthcare", "Other"];
 const INCOME_CATEGORIES = ["Salary", "Freelance", "Business", "Investments", "Gift", "Other"];
@@ -44,13 +44,23 @@ function App() {
   const [budgetDraft, setBudgetDraft] = useState("");
   const [categoryDraft, setCategoryDraft] = useState({});
 
+  const endSession = useCallback((message = "") => {
+    localStorage.removeItem("pocketsmart_token");
+    setToken(null);
+    setUser(null);
+    setData(null);
+    setPage("Dashboard");
+    setAuthMode("login");
+    setError(message);
+  }, []);
+
   const loadData = useCallback(async (activeToken = token) => {
     if (!activeToken) return;
     setLoading(true);
     setError("");
     try {
-      const [me, overview, transactions, budget, analytics, recommendations] = await Promise.all([
-        request("/api/auth/me", {}, activeToken),
+      const me = await request("/api/auth/me", {}, activeToken);
+      const [overview, transactions, budget, analytics, recommendations] = await Promise.all([
         request("/api/dashboard", {}, activeToken),
         request("/api/transactions", {}, activeToken),
         request("/api/budget", {}, activeToken),
@@ -62,23 +72,19 @@ function App() {
       setBudgetDraft(String(budget.monthly_limit));
       setCategoryDraft(budget.category_limits || {});
     } catch (err) {
-      if (err.message.includes("token") || err.message.includes("credentials")) {
-        logout();
-      } else setError(err.message);
+      if (err instanceof ApiError && err.status === 401) endSession("Your session expired. Please sign in again.");
+      else setError(err.message);
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, endSession]);
 
   useEffect(() => { if (token) loadData(token); }, [token, loadData]);
   useEffect(() => {
     if (toast) { const timer = setTimeout(() => setToast(""), 3200); return () => clearTimeout(timer); }
   }, [toast]);
 
-  const logout = () => {
-    localStorage.removeItem("pocketsmart_token");
-    setToken(null); setUser(null); setData(null); setPage("Dashboard");
-  };
+  const logout = () => endSession();
 
   const authenticate = async (event) => {
     event.preventDefault();
@@ -91,7 +97,7 @@ function App() {
       });
       localStorage.setItem("pocketsmart_token", result.access_token);
       setToken(result.access_token);
-    } catch (err) { setError(err.message); }
+    } catch (err) { if (err instanceof ApiError && err.status === 401) endSession("Your session expired. Please sign in again."); else setError(err.message); }
     finally { setAuthLoading(false); }
   };
 
@@ -110,7 +116,7 @@ function App() {
   const deleteTransaction = async (id) => {
     if (!window.confirm("Delete this transaction? This cannot be undone.")) return;
     try { await request(`/api/transactions/${id}`, { method: "DELETE" }); await loadData(); setToast("Transaction deleted."); }
-    catch (err) { setError(err.message); }
+    catch (err) { if (err instanceof ApiError && err.status === 401) endSession("Your session expired. Please sign in again."); else setError(err.message); }
   };
 
   const saveBudget = async (event) => {
@@ -121,7 +127,7 @@ function App() {
         body: JSON.stringify({ monthly_limit: Number(budgetDraft), category_limits: Object.fromEntries(Object.entries(categoryDraft).map(([key, value]) => [key, Number(value || 0)])) }),
       });
       await loadData(); setToast("Your budget is saved.");
-    } catch (err) { setError(err.message); }
+    } catch (err) { if (err instanceof ApiError && err.status === 401) endSession("Your session expired. Please sign in again."); else setError(err.message); }
   };
 
   const sendChat = async (text = chatInput) => {
@@ -131,7 +137,10 @@ function App() {
     try {
       const result = await request("/api/chat", { method: "POST", body: JSON.stringify({ message: text, history: next.slice(-8) }) }, token);
       setChatMessages([...next, { role: "assistant", content: result.answer }]);
-    } catch (err) { setChatMessages([...next, { role: "assistant", content: `I couldn't answer that just now: ${err.message}` }]); }
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) endSession("Your session expired. Please sign in again.");
+      else setChatMessages([...next, { role: "assistant", content: `I couldn't answer that just now: ${err.message}` }]);
+    }
     finally { setChatLoading(false); }
   };
 
